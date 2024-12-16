@@ -68,10 +68,7 @@ static void ref_delete(TestContext *c, const char *key) {
 }
 
 static void pages_put(TestContext *c, uint64_t ptr, node_t node) {
-  assert(c != NULL);
-  assert(c->pages != NULL);
-  assert(c->pages_size > 0);
-
+  DEBUG_PRINT("putting page %lu\n", ptr);
   size_t idx = ptr % c->pages_size;
   struct Page *page = malloc(sizeof(struct Page));
 
@@ -96,18 +93,21 @@ static node_t pages_get(TestContext *c, uint64_t ptr) {
 }
 
 static void pages_delete(TestContext *c, uint64_t ptr) {
+  DEBUG_PRINT("attempting to delete page %lu\n", ptr);
   size_t idx = ptr % c->pages_size;
   struct Page **ppage = &c->pages[idx];
   while (*ppage) {
     if ((*ppage)->ptr == ptr) {
+      DEBUG_PRINT("found and deleting page %lu\n", ptr);
       struct Page *next = (*ppage)->next;
-      free((*ppage)->node);
+      // free((*ppage)->node);
       free(*ppage);
       *ppage = next;
       return;
     }
     ppage = &(*ppage)->next;
   }
+  DEBUG_PRINT("page %lu not found to delete!\n", ptr);
 }
 
 static inline uint16_t get_node_type(node_t node) {
@@ -419,17 +419,11 @@ static void cleanup_test_context(TestContext *c) {
   }
   free(c->ref);
 
-  for (size_t i = 0; i < c->pages_size; i++) {
-    struct Page *page = c->pages[i];
-    while (page) {
-      struct Page *next = page->next;
-      free(page->node);
-      free(page);
-      page = next;
-    }
+  if (c->tree.root != 0) {
+    c->tree.del(c->tree.root);
   }
-  free(c->pages);
 
+  free(c->pages);
   free(c);
   g_test_context = NULL;
 }
