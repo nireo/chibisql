@@ -15,10 +15,10 @@ typedef uint64_t (*create_node_fn)(uint8_t *node);
 typedef void (*delete_node_fn)(uint64_t ptr);
 
 typedef struct btree_t {
-  uint64_t root;
-  get_node_fn get;
-  create_node_fn create;
-  delete_node_fn del;
+    uint64_t root;
+    get_node_fn get;
+    create_node_fn create;
+    delete_node_fn del;
 } btree_t;
 
 typedef uint8_t *node_t;

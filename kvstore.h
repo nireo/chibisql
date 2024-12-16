@@ -3,10 +3,10 @@
 #include "btree.h"
 
 typedef struct {
-  const char *path;
-  int fd;
-  btree_t btree;
-  bool failed;
+    const char *path;
+    int fd;
+    btree_t btree;
+    bool failed;
 } kv_store_t;
 
 kv_store_t *kv_store_open(const char *path);
