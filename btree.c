@@ -69,6 +69,18 @@ static void get_node_key(node_t node, uint16_t idx, uint8_t **key,
   *key = node + pos + 4;
 }
 
+static void get_node_val(node_t node, uint16_t idx, uint8_t **val,
+                         uint16_t *val_len) {
+  assert(idx < get_node_nkeys(node));
+  uint16_t pos = get_kv_pos(node, idx);
+
+  uint16_t key_len;
+  memcpy(&key_len, node + pos, sizeof(uint16_t));
+  memcpy(val_len, node + pos + 2, sizeof(uint16_t));
+
+  *val = node + pos + 4 + key_len;
+}
+
 static int compare_keys(uint8_t *key1, uint16_t len1, uint8_t *key2,
                         uint16_t len2) {
   uint16_t min_len = len1 < len2 ? len1 : len2;
@@ -214,18 +226,19 @@ static split_result_t node_split3(node_t old) {
 
   if (node_nbytes(old) <= BTREE_PAGE_SIZE) {
     res.n_splits = 1;
-    res.nodes[0] = (node_t)malloc(BTREE_PAGE_SIZE);
-    memcpy(res.nodes[0], old, BTREE_PAGE_SIZE);
+    res.nodes[0] = malloc(BTREE_PAGE_SIZE);
+    memcpy(res.nodes[0], old, node_nbytes(old));
     return res;
   }
 
   node_t left = malloc(2 * BTREE_PAGE_SIZE);
   node_t right = malloc(BTREE_PAGE_SIZE);
+
   node_split2(left, right, old);
 
   if (node_nbytes(left) <= BTREE_PAGE_SIZE) {
     node_t final_left = malloc(BTREE_PAGE_SIZE);
-    memcpy(final_left, left, BTREE_PAGE_SIZE);
+    memcpy(final_left, left, node_nbytes(left));
     free(left);
 
     res.n_splits = 2;
@@ -240,13 +253,50 @@ static split_result_t node_split3(node_t old) {
   node_split2(leftleft, middle, left);
   free(left);
 
-  assert(node_nbytes(leftleft) <= BTREE_PAGE_SIZE);
-
   res.n_splits = 3;
   res.nodes[0] = leftleft;
   res.nodes[1] = middle;
   res.nodes[2] = right;
   return res;
+}
+
+static void node_replace_kid_1ptr(node_t new_node, node_t old_node,
+                                  uint16_t idx, uint64_t ptr) {
+  memcpy(new_node, old_node, node_nbytes(old_node));
+  set_node_ptr(new_node, idx, ptr);
+}
+
+static void node_replace_kid_n(btree_t *tree, node_t new_node, node_t old_node,
+                               uint16_t idx, node_t *kids, uint16_t n_kids) {
+  uint8_t *old_key;
+  uint16_t old_key_len;
+  get_node_key(old_node, idx, &old_key, &old_key_len);
+
+  uint8_t *kid_key;
+  uint16_t kid_key_len;
+  get_node_key(kids[0], 0, &kid_key, &kid_key_len);
+
+  if (n_kids == 1 && kid_key_len == old_key_len &&
+      memcmp(kid_key, old_key, kid_key_len) == 0) {
+    node_replace_kid_1ptr(new_node, old_node, idx, tree->create(kids[0]));
+    return;
+  }
+
+  set_node_header(new_node, NODE_INTERNAL,
+                  get_node_nkeys(old_node) + n_kids - 1);
+
+  node_append_range(new_node, old_node, 0, 0, idx);
+
+  for (uint16_t i = 0; i < n_kids; i++) {
+    uint8_t *key;
+    uint16_t key_len;
+    get_node_key(kids[i], 0, &key, &key_len);
+    node_append_kv(new_node, idx + i, tree->create(kids[i]), key, key_len, NULL,
+                   0);
+  }
+
+  node_append_range(new_node, old_node, idx + n_kids, idx + 1,
+                    get_node_nkeys(old_node) - (idx + 1));
 }
 
 void btree_init(btree_t *tree, get_node_fn get, create_node_fn create,
@@ -255,4 +305,277 @@ void btree_init(btree_t *tree, get_node_fn get, create_node_fn create,
   tree->get = get;
   tree->create = create;
   tree->del = del;
+}
+
+static node_t tree_insert(btree_t *tree, node_t node, uint8_t *key,
+                          uint16_t key_len, uint8_t *val, uint16_t val_len);
+
+static void node_insert(btree_t *tree, node_t new_node, node_t node,
+                        uint16_t idx, uint8_t *key, uint16_t key_len,
+                        uint8_t *val, uint16_t val_len) {
+  uint64_t kid_ptr = get_node_ptr(node, idx);
+  node_t kid_node = tree->get(kid_ptr);
+  node_t updated = tree_insert(tree, kid_node, key, key_len, val, val_len);
+
+  split_result_t split = node_split3(updated);
+  free(updated);
+
+  tree->del(kid_ptr);
+
+  node_replace_kid_n(tree, new_node, node, idx, split.nodes, split.n_splits);
+  for (int i = 0; i < split.n_splits; i++) {
+    free(split.nodes[i]);
+  }
+}
+
+static node_t tree_insert(btree_t *tree, node_t node, uint8_t *key,
+                          uint16_t key_len, uint8_t *val, uint16_t val_len) {
+  node_t new_node = malloc(2 * BTREE_PAGE_SIZE);
+  uint16_t idx = node_lookup_le(node, key, key_len);
+  uint8_t *existing_key;
+  uint16_t existing_key_len;
+  get_node_key(node, idx, &existing_key, &existing_key_len);
+
+  switch (get_node_type(node)) {
+  case NODE_LEAF: {
+    if (key_len == existing_key_len &&
+        memcmp(key, existing_key, key_len) == 0) {
+      leaf_update(new_node, node, idx, key, key_len, val, val_len);
+    } else {
+      leaf_insert(new_node, node, idx + 1, key, key_len, val, val_len);
+    }
+    break;
+  }
+  case NODE_INTERNAL: {
+    node_insert(tree, new_node, node, idx, key, key_len, val, val_len);
+    break;
+  }
+  default:
+    assert(false && "bad node type!");
+  }
+
+  return new_node;
+}
+
+void btree_insert(btree_t *tree, uint8_t *key, uint16_t key_len, uint8_t *val,
+                  uint16_t val_len) {
+  printf("Inserting into tree: %.*s\n", key_len, key);
+  assert(key_len > 0 && key_len <= BTREE_MAX_KEY_SIZE);
+  assert(val_len <= BTREE_MAX_VAL_SIZE);
+
+  if (tree->root == 0) {
+    node_t root = malloc(BTREE_PAGE_SIZE);
+    set_node_header(root, NODE_LEAF, 2);
+
+    node_append_kv(root, 0, 0, NULL, 0, NULL, 0);
+    node_append_kv(root, 1, 0, key, key_len, val, val_len);
+
+    tree->root = tree->create(root);
+    free(root);
+    return;
+  }
+
+  node_t root_node = tree->get(tree->root);
+  node_t new_node = tree_insert(tree, root_node, key, key_len, val, val_len);
+
+  split_result_t split = node_split3(new_node);
+  free(new_node);
+  tree->del(tree->root);
+
+  if (split.n_splits > 1) {
+    node_t new_root = malloc(BTREE_PAGE_SIZE);
+    set_node_header(new_root, NODE_INTERNAL, split.n_splits);
+
+    for (uint16_t i = 0; i < split.n_splits; i++) {
+      uint8_t *key;
+      uint16_t key_len;
+      get_node_key(split.nodes[i], 0, &key, &key_len);
+      uint64_t ptr = tree->create(split.nodes[i]);
+      node_append_kv(new_root, i, ptr, key, key_len, NULL, 0);
+    }
+
+    tree->root = tree->create(new_root);
+    free(new_root);
+  } else {
+    tree->root = tree->create(split.nodes[0]);
+  }
+
+  for (uint16_t i = 0; i < split.n_splits; i++) {
+    free(split.nodes[i]);
+  }
+}
+
+static void node_merge(node_t new_node, node_t left, node_t right) {
+  uint16_t type = get_node_type(left);
+  assert(type == get_node_type(right));
+
+  set_node_header(new_node, type, get_node_nkeys(left) + get_node_nkeys(right));
+
+  node_append_range(new_node, left, 0, 0, get_node_nkeys(left));
+  node_append_range(new_node, right, get_node_nkeys(left), 0,
+                    get_node_nkeys(right));
+
+  assert(node_nbytes(new_node) <= BTREE_PAGE_SIZE);
+}
+
+static void node_replace_2kid(node_t new_node, node_t old_node, uint16_t idx,
+                              uint64_t ptr, uint8_t *key, uint16_t key_len) {
+  set_node_header(new_node, NODE_INTERNAL, get_node_nkeys(old_node) - 1);
+  node_append_range(new_node, old_node, 0, 0, idx);
+  node_append_kv(new_node, idx, ptr, key, key_len, NULL, 0);
+  node_append_range(new_node, old_node, idx + 1, idx + 2,
+                    get_node_nkeys(old_node) - (idx + 2));
+}
+
+static int should_merge(btree_t *tree, node_t node, uint16_t idx,
+                        node_t updated, node_t *sibling) {
+  if (node_nbytes(updated) > BTREE_PAGE_SIZE / 4) {
+    return 0;
+  }
+
+  if (idx > 0) {
+    *sibling = tree->get(get_node_ptr(node, idx - 1));
+    uint16_t merged = node_nbytes(*sibling) + node_nbytes(updated) - HEADER;
+    if (merged <= BTREE_PAGE_SIZE) {
+      return -1;
+    }
+    free(*sibling);
+  }
+
+  if (idx + 1 < get_node_nkeys(node)) {
+    *sibling = tree->get(get_node_ptr(node, idx + 1));
+    uint16_t merged = node_nbytes(*sibling) + node_nbytes(updated) - HEADER;
+    if (merged <= BTREE_PAGE_SIZE) {
+      return 1;
+    }
+    free(*sibling);
+  }
+
+  return 0;
+}
+
+static void leaf_delete(node_t new_node, node_t old_node, uint16_t idx) {
+  set_node_header(new_node, NODE_LEAF, get_node_nkeys(old_node) - 1);
+  node_append_range(new_node, old_node, 0, 0, idx);
+  node_append_range(new_node, old_node, idx, idx + 1,
+                    get_node_nkeys(old_node) - (idx + 1));
+}
+
+static node_t tree_delete(btree_t *tree, node_t node, uint8_t *key,
+                          uint16_t key_len);
+
+static node_t node_delete(btree_t *tree, node_t node, uint16_t idx,
+                          uint8_t *key, uint16_t key_len) {
+  uint64_t kid_ptr = get_node_ptr(node, idx);
+  node_t kid_node = tree->get(kid_ptr);
+  node_t updated = tree_delete(tree, kid_node, key, key_len);
+  free(kid_node);
+
+  if (!updated) {
+    return NULL;
+  }
+
+  tree->del(kid_ptr);
+  node_t new_node = malloc(BTREE_PAGE_SIZE);
+
+  node_t sibling = NULL;
+  int merge_dir = should_merge(tree, node, idx, updated, &sibling);
+
+  switch (merge_dir) {
+  case -1: {
+    node_t merged = malloc(BTREE_PAGE_SIZE);
+    node_merge(merged, sibling, updated);
+    tree->del(get_node_ptr(node, idx - 1));
+    free(sibling);
+
+    uint8_t *merged_key;
+    uint16_t merged_key_len;
+    get_node_key(merged, 0, &merged_key, &merged_key_len);
+
+    node_replace_2kid(new_node, node, idx - 1, tree->create(merged), merged_key,
+                      merged_key_len);
+    free(merged);
+    break;
+  }
+  case 1: {
+    node_t merged = malloc(BTREE_PAGE_SIZE);
+    node_merge(merged, updated, sibling);
+    tree->del(get_node_ptr(node, idx + 1));
+    free(sibling);
+
+    uint8_t *merged_key;
+    uint16_t merged_key_len;
+    get_node_key(merged, 0, &merged_key, &merged_key_len);
+
+    node_replace_2kid(new_node, node, idx, tree->create(merged), merged_key,
+                      merged_key_len);
+    free(merged);
+    break;
+  }
+  case 0: {
+    if (get_node_nkeys(updated) == 0) {
+      assert(get_node_nkeys(node) == 1 && idx == 0);
+      set_node_header(new_node, NODE_INTERNAL, 0);
+    } else {
+      node_replace_kid_n(tree, new_node, node, idx, &updated, 1);
+    }
+    break;
+  }
+  }
+
+  free(updated);
+  return new_node;
+}
+
+static node_t tree_delete(btree_t *tree, node_t node, uint8_t *key,
+                          uint16_t key_len) {
+  uint16_t idx = node_lookup_le(node, key, key_len);
+
+  switch (get_node_type(node)) {
+  case NODE_LEAF: {
+    uint8_t *existing_key;
+    uint16_t existing_key_len;
+    get_node_key(node, idx, &existing_key, &existing_key_len);
+
+    if (key_len != existing_key_len ||
+        memcmp(key, existing_key, key_len) != 0) {
+      return NULL;
+    }
+
+    node_t new_node = malloc(BTREE_PAGE_SIZE);
+    leaf_delete(new_node, node, idx);
+    return new_node;
+  }
+  case NODE_INTERNAL:
+    return node_delete(tree, node, idx, key, key_len);
+  default:
+    assert(false && "bad node type!");
+    return NULL;
+  }
+}
+
+bool btree_delete(btree_t *tree, uint8_t *key, uint16_t key_len) {
+  assert(key_len > 0 && key_len <= BTREE_MAX_KEY_SIZE);
+
+  if (tree->root == 0) {
+    return false;
+  }
+
+  node_t root_node = tree->get(tree->root);
+  node_t updated = tree_delete(tree, root_node, key, key_len);
+  free(root_node);
+
+  if (!updated) {
+    return false;
+  }
+
+  tree->del(tree->root);
+  if (get_node_type(updated) == NODE_INTERNAL && get_node_nkeys(updated) == 1) {
+    tree->root = get_node_ptr(updated, 0);
+  } else {
+    tree->root = tree->create(updated);
+  }
+
+  free(updated);
+  return true;
 }

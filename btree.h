@@ -26,8 +26,8 @@ typedef enum node_type_t { NODE_INTERNAL, NODE_LEAF } node_type_t;
 
 void btree_init(btree_t *tree, get_node_fn get, create_node_fn create,
                 delete_node_fn del);
-void btree_insert(btree_t *tree, uint8_t *key, size_t klen, uint8_t *val,
-                  size_t vlen);
-bool btree_delete(btree_t *tree, uint8_t *key, size_t klen);
+void btree_insert(btree_t *tree, uint8_t *key, uint16_t klen, uint8_t *val,
+                  uint16_t vlen);
+bool btree_delete(btree_t *tree, uint8_t *key, uint16_t klen);
 
 #endif
