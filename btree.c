@@ -1,4 +1,5 @@
 #include "btree.h"
+#include "chibisql.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -359,7 +360,7 @@ static node_t tree_insert(btree_t *tree, node_t node, uint8_t *key,
 
 void btree_insert(btree_t *tree, uint8_t *key, uint16_t key_len, uint8_t *val,
                   uint16_t val_len) {
-  printf("Inserting into tree: %.*s\n", key_len, key);
+  DEBUG_PRINT("Inserting into tree: %.*s\n", key_len, key);
   assert(key_len > 0 && key_len <= BTREE_MAX_KEY_SIZE);
   assert(val_len <= BTREE_MAX_VAL_SIZE);
 

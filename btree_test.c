@@ -1,4 +1,5 @@
 #include "btree.h"
+#include "chibisql.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,7 +31,7 @@ static size_t hash_string(const char *str, size_t size) {
 }
 
 static void ref_put(TestContext *c, const char *key, const char *value) {
-  printf("Storing in ref: %s -> %s\n", key, value);
+  DEBUG_PRINT("Storing in ref: %s -> %s\n", key, value);
   size_t idx = hash_string(key, c->ref_size);
   struct KeyValue *kv = malloc(sizeof(struct KeyValue));
   kv->key = strdup(key);
@@ -388,7 +389,7 @@ static void verify_tree(TestContext *c) {
   qsort(tree_data->keys, tree_data->count, sizeof(char *), compare_strings);
   qsort(ref_data->keys, ref_data->count, sizeof(char *), compare_strings);
 
-  printf("%zu %zu\n", tree_data->count, ref_data->count);
+  DEBUG_PRINT("%zu %zu\n", tree_data->count, ref_data->count);
   assert(tree_data->count == ref_data->count);
 
   for (size_t i = 0; i < tree_data->count; i++) {
@@ -528,18 +529,18 @@ void test_btree_t_rand_length() {
 int main() {
   srand(time(NULL));
 
-  printf("Running ascending test...\n");
+  printf("running ascending test...\n");
   test_btree_t_basic_ascending();
 
-  printf("Running descending test...\n");
+  printf("running descending test...\n");
   test_btree_t_basic_descending();
 
-  printf("Running random test...\n");
+  printf("running random test...\n");
   test_btree_t_basic_rand();
 
-  printf("Running random length test...\n");
+  printf("running random length test...\n");
   test_btree_t_rand_length();
 
-  printf("All tests passed!\n");
+  printf("all tests passed!\n");
   return 0;
 }
